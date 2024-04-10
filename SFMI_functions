@@ -1,0 +1,162 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Nov  2 11:18:43 2023
+
+@author: Joe
+"""
+
+#imports the necessary packages/libaries
+import numpy as np
+import scipy.linalg as al
+import matplotlib
+import matplotlib.pyplot as plt
+import scipy.integrate as igr
+import scipy.optimize as opt
+
+#For consistency in plot outputs
+plt.rc('xtick', labelsize=14)
+plt.rc('ytick', labelsize=14)
+
+matplotlib.rcParams['font.family']='serif'
+matplotlib.rcParams['mathtext.fontset']='cm'
+
+# S-wave scattering length for atomic H (see write up)
+a_scattering = 7.21E-11
+
+# Sets size of the Hamitonian for expressing the Wannier functions as a Fourier transform of the Bloch functions.
+lmax = 20
+l=np.arange(-lmax,lmax+1)
+
+# The main point of this module is to introduce the class "lattice_system".
+# This contains several key properties about the lattice system, such as its depth, wavelength etc... and has internal calculation functions
+class lattice_system:
+    #Initialise the class: takes in the depth, the resolution of the quasimomentum distribution (in the first Brillouin zone) and the lattice wavelength.
+    def __init__(self, D, q_step, wav):
+        self.length_scale = wav*10**(-9)/(2*np.pi) #scale legnths by units defined s.t. the kvector is 1
+        self.a_scatter = a_scattering/self.length_scale
+        self.depth = D
+        self.a_lattice = np.pi
+        self.k_light = 1
+        self.q_step = q_step
+        self.initialise_q_s(self.q_step)
+    # Function that allows the updateing of the saved lattice depth
+    def update_D(self, Dnew):
+        self.depth = Dnew
+        self.initialise_q_s(self.q_step)
+        return
+    # Functions to calculate the vannier functions as the fourier transform of the Bloch functions, see write up.
+    # Finds eigen-system of related Hamiltonian.
+    def Eigens(self, q):
+        H = np.diag([(q+2*j*self.k_light)**2 + self.depth/2 for j in l])
+        H += -(self.depth)/4 *(np.diag(np.ones(len(l)-1),1)+np.diag(np.ones(len(l)-1),-1))
+        Es, Vs = al.eigh(H)
+        return (Es, Vs) #return the lowest band
+    # Used to save the eigenvalues and vectors of the related hamiltonian to variables internal to the class.
+    def initialise_q_s(self, q_step):
+        self.qs = np.linspace(-np.pi/self.a_lattice, np.pi/self.a_lattice, q_step)
+        self.dq = abs(self.qs[0] - self.qs[1])
+        Eqs = []
+        Vqs = []
+        for q in self.qs:
+            Es, V = self.Eigens(q)
+            Eqs.append(Es)
+            Vqs.append(V)
+        self.Eqs = np.array(Eqs)
+        self.Vqs = np.array(Vqs)
+        return
+    # As an aside, allows the plotting of Bloch bands up to some maximum index.
+    def plot_bands(self, maxi):
+        Fig_bands, ax_bands = plt.subplots()
+        for E in range(0, maxi):
+            ax_bands.plot(self.qs, self.Eqs[:, E], label=f"band {E}")
+        ax_bands.set_xlabel("q")
+        ax_bands.set_ylabel("E/Er")
+        ax_bands.legend()
+        plt.show()
+        return
+    # Function to calculate the wannier function at a particular lattice site with position xi, with the positions of the function given in the vector xs.
+    def Wannier(self, xi, xs):
+        consts = np.sqrt(self.a_lattice)/(2*np.pi)
+        wan = np.array([igr.trapezoid(np.array([np.exp(1j*self.qs[q]*(x - self.a_lattice*xi))*sum(self.Vqs[q, :, 0]*np.exp(1j*2*self.k_light*x*l)) for q in range(0, len(self.qs))]), self.qs, self.dq) for x in xs])
+        return consts*wan
+    # Function to check the othronomality of the generated Wannier functions.
+    def check_orthonormality(self, pair, xs):
+        W0 = self.Wannier(pair[0], xs)
+        W1= self.Wannier(pair[1], xs)
+        W0_squared = igr.trapezoid([np.conj(w)*w for w in W0], xs, xs[1] - xs[0])
+        W1_squared = igr.trapezoid([np.conj(w)*w for w in W1], xs, xs[1] - xs[0])
+        W_overlap = igr.trapezoid([np.conj(W0[w])*W1[w] for w in range(0, len(xs))], xs, xs[1] - xs[0])
+        return [W0_squared, W1_squared, W_overlap]
+    # Plots the Wannier functions for a given range in position and resolution to this range.
+    def plot_Wan(self, xrange, xresolution):
+        xs = np.linspace(-xrange*self.a_lattice, xrange*self.a_lattice, xresolution)
+        xi = [-1, 0, 1]
+        Fig_wannier, ax_wannier = plt.subplots()
+        colors = [(11/255, 99/255, 133/255), (167/255, 44/255, 74/255), (157/255, 159/255, 99/255)]
+        for xii in xi:
+            wan = self.Wannier(xii, xs)
+            ax_wannier.plot([x/self.a_lattice for x in xs], [abs(w)**2 for w in wan], color=colors[xii - xi[0]])
+        Norm = abs(self.Wannier(0, [0]))**2
+        ax_wannier.plot([x/self.a_lattice for x in xs], [(np.sin(self.k_light*x)**2)*Norm for x in xs], color= "grey", linewidth = 2, alpha = 0.5)
+        ax_wannier.set_xlabel("x", fontsize=16)
+        ax_wannier.set_ylabel("|w(x)|^2")
+        ax_wannier.set_yticks([])
+        ax_wannier.set_title(f"For D={self.depth}", fontsize=16)
+        plt.show()
+        return        
+    # Function to calculate the on-site interaction potential U as per the write up
+    def calculate_U(self, xs):
+        W = self.Wannier(0, xs)
+        integrand = np.array([np.conj(w)*np.conj(w)*w*w for w in W])
+        return(8*np.pi*self.a_scatter/self.k_light**2)*(igr.trapezoid(integrand, xs, xs[1] - xs[0]))**3
+    # Function to calculate the hopping potential J as per the write up
+    def calculate_J(self, xi, xj):
+        integrand = np.array([np.exp(1j*self.qs[q]*self.a_lattice*(xi - xj))*self.Eqs[q, 0] for q in range(0, len(self.qs))])
+        return -igr.trapezoid(integrand, self.qs, self.dq)*self.a_lattice/(2*np.pi)
+    # Function to plot U, calculating for a user-inputted space with various values of lattice depth
+    # Also calculates the analytical approximation for U
+    def plot_U(self, xrange, xresolution):
+        xs = np.linspace(-xrange*self.a_lattice, xrange*self.a_lattice, xresolution)
+        Ds = np.arange(0.01, 30.01, 0.5)
+        Us = []
+        for D in Ds:
+            self.update_D(D)
+            U  = self.calculate_U(xs).real
+            Us.append(U)
+        theory = [np.sqrt(8/np.pi)*self.k_light*self.a_scatter*(D**(3/4))for D in Ds]
+        Fig_U, ax_U = plt.subplots(figsize=(4, 4), dpi=200)
+        ax_U.plot(Ds, Us, label="Numerical", color=(11/255, 99/255, 133/255))
+        ax_U.plot(Ds, theory, label = "Analytic", color=(167/255, 44/255, 74/255), linestyle="dashed")
+        ax_U.set_xlabel(r"$D$")
+        ax_U.set_ylabel(r'$U/E_{rec}$')
+        ax_U.legend(fontsize=10)
+        plt.show()
+        return
+    # Function to plot J,with various values of lattice depth
+    # Also calculates the analytical approximation for J
+    def plot_J(self):
+        Ds = np.arange(0.01, 30.01, 0.5)
+        Js = []
+        for D in Ds:
+            self.update_D(D)
+            J  = self.calculate_J(0, 1).real
+            Js.append(J)
+        theory = [(4/np.sqrt(np.pi))*(D**(3/4))*np.exp(-2*np.sqrt(D)) for D in Ds]
+        Fig_J, ax_J = plt.subplots(figsize=(4, 4), dpi=200)
+        ax_J.plot(Ds, Js, label="Numerical", color=(11/255, 99/255, 133/255))
+        ax_J.plot(Ds, theory, label="Analytic", color=(167/255, 44/255, 74/255), linestyle="dashed")
+        ax_J.set_yscale("log")
+        ax_J.set_xlabel(r'$D$')
+        ax_J.set_ylabel(r'$J/E_{rec}$')
+        ax_J.legend(fontsize=10)
+        plt.show()
+        return
+    # Functions to calculate the MI critical depth from the mean field theory critical ratio of U/J
+    def find_UvsJ(self, D):
+        xs = np.linspace(-4*self.a_lattice, 4*self.a_lattice, 500)
+        self.update_D(D)
+        U = self.calculate_U(xs).real
+        J = self.calculate_J(0, 1).real
+        return U - J*5.8*6
+    def find_D_crit(self, Dguess):
+        return opt.newton(self.find_UvsJ, Dguess)
